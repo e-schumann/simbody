@@ -18,11 +18,6 @@ else()
 endif()
 cmake_minimum_required(VERSION ${SIMBODY_REQUIRED_CMAKE_VERSION})
 
-if(COMMAND cmake_policy)
-    cmake_policy(SET CMP0003 NEW)
-    cmake_policy(SET CMP0005 NEW)
-endif()
-
 project(Simbody)
 
 # At this point CMake will have set CMAKE_INSTALL_PREFIX to /usr/local on Linux
@@ -41,6 +36,16 @@ endif()
 # Include GNUInstallDirs to get canonical paths
 include(GNUInstallDirs)
 
+# Declare the option for code coverage
+option(SIMBODY_COVERAGE
+       "Adding ability to assess test coverage (requires gcc or clang)."
+       OFF)
+
+# Declare the option to install documentation
+option(INSTALL_DOCS
+       "Install documentation."
+       ON)
+
 # Check compiler version
 if(MSVC)
     if(MSVC_VERSION LESS 1800 OR MSVC_VERSION EQUAL 1800)
@@ -50,6 +55,9 @@ if(MSVC)
                             "README.md for more information.\nIf you have the"
                             " 'Visual C++ Compiler Nov 2013 CTP (CTP_Nov2013)'"
                             " comment this test and configure normally.")
+    endif()
+    if(SIMBODY_COVERAGE)
+        message(FATAL_ERROR "Code coverage is not possible with MSVC.")
     endif()
 elseif(${CMAKE_CXX_COMPILER_ID} MATCHES "GNU")
     set(SIMBODY_REQUIRED_GCC_VERSION 4.9.0)
@@ -68,10 +76,10 @@ elseif(${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
 endif()
 
 set(SIMBODY_MAJOR_VERSION 3)
-set(SIMBODY_MINOR_VERSION 6)
+set(SIMBODY_MINOR_VERSION 7)
 set(SIMBODY_PATCH_VERSION 0)
 
-set(SIMBODY_COPYRIGHT_YEARS "2005-16")
+set(SIMBODY_COPYRIGHT_YEARS "2005-18")
 
 # underbar separated list of dotted authors, no spaces or commas
 set(SIMBODY_AUTHORS "Michael.Sherman_Peter.Eastman")
@@ -108,10 +116,19 @@ set(BUILD_BINARY_DIR ${CMAKE_BINARY_DIR}
 set(EXECUTABLE_OUTPUT_PATH ${BUILD_BINARY_DIR})
 set(LIBRARY_OUTPUT_PATH ${BUILD_BINARY_DIR})
 
+# Dynamic libraries, tests, and examples
+set(BUILD_DYNAMIC_LIBRARIES TRUE CACHE BOOL
+"Build dynamic versions of libraries")
+
 # Static libraries, tests, and examples won't be built unless this
 # is set.
 set(BUILD_STATIC_LIBRARIES FALSE CACHE BOOL
-"Build '_static' versions of libraries in addition to dynamic libraries?")
+"Build '_static' versions of libraries")
+
+if(NOT BUILD_DYNAMIC_LIBRARIES AND NOT BUILD_STATIC_LIBRARIES)
+    message(SEND_ERROR "BUILD_DYNAMIC_LIBRARIES and BUILD_STATIC_LIBRARIES "
+        "are both set to FALSE. No compilation is possible!")
+endif()
 
 # Use this to generate a private set of libraries whose names
 # won't conflict with installed versions.
@@ -188,7 +205,7 @@ set(BUILD_EXAMPLES ON CACHE BOOL
 
 # Set whether to build the Visualizer code.
 set(BUILD_VISUALIZER ON CACHE BOOL
-    "Control building of the visualizer component")
+    "Control building of the visualizer component.")
 
 # Turning this off reduces the build time (and space) substantially,
 # but you may miss the occasional odd bug. Also currently on Windows it
@@ -200,8 +217,12 @@ set(BUILD_TESTS_AND_EXAMPLES_STATIC ON CACHE BOOL
     Statically-linked examples are never installed.")
 mark_as_advanced(BUILD_TESTS_AND_EXAMPLES_STATIC)
 
-set(BUILD_TESTS_AND_EXAMPLES_SHARED ON CACHE BOOL
-    "If BUILD_TESTING or BUILD_EXAMPLES, build dynamically-linked ones?")
+if(BUILD_DYNAMIC_LIBRARIES)
+    set(BUILD_TESTS_AND_EXAMPLES_SHARED ON CACHE BOOL
+        "If BUILD_TESTING or BUILD_EXAMPLES, build dynamically-linked ones?")
+else()
+    set(BUILD_TESTS_AND_EXAMPLES_SHARED OFF)
+endif()
 mark_as_advanced(BUILD_TESTS_AND_EXAMPLES_SHARED)
 
 if(BUILD_TESTING AND NOT (BUILD_TESTS_AND_EXAMPLES_STATIC OR
@@ -407,6 +428,11 @@ if(${CMAKE_CXX_COMPILER_ID} MATCHES "GNU" OR
     set(CMAKE_C_FLAGS_MINSIZEREL ${BUILD_C_FLAGS_MINSIZEREL}
         CACHE STRING "Can't change here -- see BUILD_C..." FORCE)
 
+    set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
+    if(SIMBODY_COVERAGE)
+        find_package(codecov)
+    endif()
+
 endif()
 
 ## When building in any of the Release modes, tell VC++ cl compiler to use
@@ -429,7 +455,7 @@ if(MSVC)
 
     ## C++
     set(BUILD_CXX_FLAGS_DEBUG
-    "/D _DEBUG /MDd /Od /Ob0 /RTC1 /Zi /GS- ${CL_INST_SET}")
+    "/D _DEBUG /MDd /Od /Ob0 /RTC1 /Zi /GS- ${CL_INST_SET}") 
     set(BUILD_CXX_FLAGS_RELEASE
     "/D NDEBUG /MD  /O2 /Ob2 /Oi /GS- ${CL_INST_SET}")
     set(BUILD_CXX_FLAGS_RELWITHDEBINFO
@@ -521,12 +547,15 @@ endif()
 if(UNIX)
     if(NOT APPLE)
         set(REALTIME_LIB rt)
+        # We do not use pthreads directly anymore, but on Linux, C++11 threads
+        # are implemented with pthreads, and we must link to it.
+        set(PTHREAD_LIB pthread)
     endif()
     set(MATH_LIBRARY m)
     set(DL_LIBRARY dl)
 endif()
 
-set(MATH_LIBS_TO_USE    ${LAPACK_BEING_USED} pthread
+set(MATH_LIBS_TO_USE    ${LAPACK_BEING_USED} ${PTHREAD_LIB}
                         ${REALTIME_LIB} ${DL_LIBRARY} ${MATH_LIBRARY})
 set(MATH_LIBS_TO_USE_VN ${MATH_LIBS_TO_USE})
 
@@ -558,7 +587,12 @@ if(BUILD_TESTING)
     add_custom_target(RUN_TESTS_PARALLEL COMMAND ${cmd})
 endif()
 
-include(ApiDoxygen.cmake)
+# These are used in Doxyfile.in and SimbodyConfig.cmake.in.
+set(SIMBODY_INSTALL_DOXYGENDIR   "${CMAKE_INSTALL_DOCDIR}/api")
+set(SIMBODY_DOXYGEN_TAGFILE_NAME "SimbodyDoxygenTagfile")
+if( INSTALL_DOCS )
+    add_subdirectory(doc)
+endif()
 
 # Specify where visualizer should be installed. This needs to be in the
 # root CMakeLists.txt so the cmake config file can see this value.
@@ -591,13 +625,16 @@ add_subdirectory( SimTKmath )
 # SimTKMATH_INCLUDE_DIRECTORIES now set
 add_subdirectory( Simbody )
 # SimTKSIMBODY_INCLUDE_DIRECTORIES now set(but not used)
+# GUI_NAME now set
 
 if( BUILD_EXAMPLES )
     add_subdirectory( examples )
 endif()
 
-file(GLOB TOPLEVEL_DOCS LICENSE.txt *.md doc/*.pdf doc/*.txt doc/*.md)
-install(FILES ${TOPLEVEL_DOCS} DESTINATION ${CMAKE_INSTALL_DOCDIR})
+if( INSTALL_DOCS )
+    file(GLOB TOPLEVEL_DOCS LICENSE.txt *.md doc/*.pdf doc/*.md)
+    install(FILES ${TOPLEVEL_DOCS} DESTINATION ${CMAKE_INSTALL_DOCDIR})
+endif()
 
 # Add uninstall target
 configure_file(
@@ -663,12 +700,12 @@ install(FILES ${CMAKE_SOURCE_DIR}/cmake/SampleCMakeLists.txt
 if(WIN32)
     if(${PLATFORM_ABI} MATCHES "x64")
         # win 64 bits
-        set(PKGCONFIG_PLATFORM_LIBS "-lliblapack -llibblas -lpthreadVC2_x64")
+        set(PKGCONFIG_PLATFORM_LIBS "-lliblapack -llibblas")
     else()
-        set(PKGCONFIG_PLATFORM_LIBS "-lliblapack -llibblas -lpthreadVC2")
+        set(PKGCONFIG_PLATFORM_LIBS "-lliblapack -llibblas")
     endif()
 elseif(APPLE)
-    set(PKGCONFIG_PLATFORM_LIBS     "-llapack -lblas -lpthread -ldl")
+    set(PKGCONFIG_PLATFORM_LIBS     "-llapack -lblas -ldl")
 else()
     set(PKGCONFIG_PLATFORM_LIBS     "-llapack -lblas -lpthread -lrt -ldl -lm")
 endif()
